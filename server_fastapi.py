@@ -12,12 +12,13 @@ from typing import Any, Optional
 from urllib.parse import unquote
 
 import GPUtil
+import numpy as np
 import psutil
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from scipy.io import wavfile
 
 from config import get_config
@@ -75,6 +76,41 @@ class AudioResponse(Response):
 
 loaded_models: list[TTSModel] = []
 
+API_KEY_HEADER = "x-api-key"
+
+
+def to_int16_audio(audio: Any) -> np.ndarray:
+    audio_array = np.asarray(audio)
+    if audio_array.dtype == np.int16:
+        return audio_array
+    if np.issubdtype(audio_array.dtype, np.floating):
+        clipped = np.clip(audio_array, -1.0, 1.0)
+        return (clipped * 32767.0).astype(np.int16)
+    if audio_array.dtype == np.uint8:
+        return ((audio_array.astype(np.int16) - 128) << 8).astype(np.int16)
+
+    max_abs = np.max(np.abs(audio_array))
+    if max_abs == 0:
+        return audio_array.astype(np.int16)
+    scaled = audio_array.astype(np.float32) / float(max_abs)
+    return (scaled * 32767.0).astype(np.int16)
+
+
+def wav_response(sample_rate: int, audio: Any) -> Response:
+    int16_audio = to_int16_audio(audio)
+    with BytesIO() as wav_content:
+        wavfile.write(wav_content, sample_rate, int16_audio)
+        return Response(content=wav_content.getvalue(), media_type="audio/wav")
+
+
+def validate_api_key(request: Request, required_api_key: str) -> None:
+    request_api_key = request.headers.get(API_KEY_HEADER)
+    if request_api_key != required_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key",
+        )
+
 
 def load_models(model_holder: TTSModelHolder):
     global loaded_models
@@ -120,7 +156,18 @@ if __name__ == "__main__":
         logger.info(
             f"The maximum length of the text is {limit}. If you want to change it, modify config.yml. Set limit to -1 to remove the limit."
         )
+    required_api_key = os.getenv("API_KEY") or os.getenv("STYLE_BERT_VITS2_API_KEY")
+    if not required_api_key:
+        raise RuntimeError(
+            "API_KEY environment variable is required for API authentication."
+        )
+
     app = FastAPI()
+
+    @app.middleware("http")
+    async def api_key_authentication(request: Request, call_next):
+        validate_api_key(request, required_api_key)
+        return await call_next(request)
     allow_origins = config.server_config.origins
     if allow_origins:
         logger.warning(
@@ -253,9 +300,7 @@ if __name__ == "__main__":
 
         logger.success("Audio successfully generated and about to send.")
 
-        with BytesIO() as wavContent:
-            wavfile.write(wavContent, sr, audio)
-            return Response(content=wavContent.getvalue(), media_type="audio/wav")
+        return wav_response(sr, audio)
 
 
     @app.post("/g2p")
@@ -333,7 +378,8 @@ if __name__ == "__main__":
             raise_validation_error(f"path={path} not found", "path")
         if not path.lower().endswith(".wav"):
             raise_validation_error(f"wav file not found in {path}", "path")
-        return FileResponse(path=path, media_type="audio/wav")
+        sample_rate, audio = wavfile.read(path)
+        return wav_response(sample_rate, audio)
 
     logger.info(f"server listen: http://127.0.0.1:{config.server_config.port}")
     logger.info(f"API docs: http://127.0.0.1:{config.server_config.port}/docs")
