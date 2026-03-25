@@ -39,6 +39,7 @@ from style_bert_vits2.nlp import bert_models
 from style_bert_vits2.nlp.japanese import pyopenjtalk_worker as pyopenjtalk
 from style_bert_vits2.nlp.japanese.user_dict import update_dict
 from style_bert_vits2.tts_model import TTSModel, TTSModelHolder
+from style_bert_vits2.utils import torch_device_to_onnx_providers
 
 
 config = get_config()
@@ -141,7 +142,9 @@ if __name__ == "__main__":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model_dir = Path(args.dir)
-    model_holder = TTSModelHolder(model_dir, device)
+    model_holder = TTSModelHolder(
+        model_dir, device, torch_device_to_onnx_providers(device)
+    )
     if len(model_holder.model_names) == 0:
         logger.error(f"Models not found in {model_dir}.")
         sys.exit(1)
