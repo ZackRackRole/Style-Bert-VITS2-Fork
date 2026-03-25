@@ -78,6 +78,8 @@ class AudioResponse(Response):
 loaded_models: list[TTSModel] = []
 
 API_KEY_HEADER = "x-api-key"
+PUBLIC_PATH_PREFIXES = ("/docs", "/redoc")
+PUBLIC_PATHS = ("/openapi.json",)
 
 
 def to_int16_audio(audio: Any) -> np.ndarray:
@@ -169,6 +171,9 @@ if __name__ == "__main__":
 
     @app.middleware("http")
     async def api_key_authentication(request: Request, call_next):
+        request_path = request.url.path
+        if request_path in PUBLIC_PATHS or request_path.startswith(PUBLIC_PATH_PREFIXES):
+            return await call_next(request)
         validate_api_key(request, required_api_key)
         return await call_next(request)
     allow_origins = config.server_config.origins
